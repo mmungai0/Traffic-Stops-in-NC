@@ -1,0 +1,950 @@
+---
+title: "Mungai Traffic Stops Project"
+author: "Mary Mungai"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, echo=FALSE}
+rm(list = ls())
+gc()
+
+library(knitr)
+library(tidyverse)
+
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/Users/22mungai/Documents/STOR 320/Final Project")
+```
+
+
+## Business Question
+What factors — including race, sex, time of day, and stop reason — are associated with search and arrest rates during traffic stops in North Carolina?
+
+## Question 1: 
+Are traffic stops more likely for certain demographic groups based on the reason for being stopped?
+- Target variable: all observations are stops so the only thing could be whether demographic groups are over-represented in the data
+- Feature variables: race, sex, reason for stop --> race and sex can be combined for the groups, especially because there's no NAs
+- Can compare this to baseline proportions of Census data in the area and compare counts 
+
+##Descriptive Statistics
+- Read in relevant libraries and data set  
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+options(scipen = 999)  # big number = strongly discourages scientific notation
+```
+
+Import Data Below
+```{r, include=FALSE}
+library(data.table)
+library(readr)
+
+final_df <- fread("final.csv")
+```
+
+Clean Data
+```{r}
+library(janitor)
+
+final_df <- final_df |>
+  mutate(across(where(is.character),
+                ~ case_when(
+                  .x %in% c("unknown", "Unknown", "", " ") ~ NA_character_, TRUE ~ .x
+                )),
+         city = factor(city),
+         subject_race = factor(subject_race),
+         subject_sex = factor(subject_sex),
+         reason_for_stop = factor(reason_for_stop)) |>
+  clean_names() |>
+  mutate(across(where(is.character), ~ str_squish(.)))
+```
+
+```{r}
+library(DataExplorer)
+
+suppressWarnings(plot_missing(final_df)) 
+```
+None of my key variables have NAs. Remember to drop contraband_found and reason_for_search so they don't become problems later.
+
+
+###Descriptive Statistics for Arrests Made
+
+```{r}
+final_df <- final_df |>
+  filter(subject_race != "" & subject_sex != "") |>
+  mutate(
+    demographic = paste(subject_race, subject_sex, sep = " ")
+  ) |>
+  mutate(across(where(is.character), ~as.factor(.x)),
+         arrest_made = factor(arrest_made, levels = c("FALSE", "TRUE")))
+  
+
+library(janitor)
+library(gt)
+summary_table <- final_df |>
+  tabyl(demographic) |>
+  arrange(desc(n)) |>
+  adorn_pct_formatting(digits = 2) |>
+  gt() #Should we drop unknown/NA groups?
+
+summary_table
+```
+```{r}
+final_df |>
+  tabyl(reason_for_stop) |>
+  arrange(desc(n)) |>
+  adorn_pct_formatting(digits = 2) |>
+  gt() #Should we drop unknown/NA groups?
+```
+Description: Percentages are calculated for each row. For example, 66.39% of the instances where the driver was under suspicion of driving while impaired resulted in an arrest, but 33.61% of the instances where the driver was stopped for the same reason did not. This confirms the trend we see in the graph: being stopped for a DWI seems to be associated with a higher arrest rate.
+
+###Comparing Descriptive Statistics to Census Data
+```{r}
+
+```
+
+There isn't an even distribution of demographics in the stop data. Black men are over-represented in the stops data set relative to their 2020 Census population, making up 29.56% of the police stops, whereas Black men made up 9.3% of the North Carolina state population in 2020. White men are under-represented relative to their 2020 Census population, making up  proportion
+
+###Distribution of arrests made
+```{r}
+final_df |>
+  ggplot(aes(x= arrest_made, y = after_stat(prop), group = 1)) + geom_bar() + labs(
+    title = "Distribution of arrests made",
+    x = "Arrest made",
+    y = "Count"
+  )
+```
+Description: Arrests made has a very imbalanced class. More than 95% of the rows are in the "false" class, which might become a problem later. Consider down-sampling or up-sampling when building predictive models.
+
+###Distribution of arrests made by demographic
+```{r}
+final_df |>
+  ggplot(aes(x= arrest_made, fill = demographic)) + geom_bar(position = "fill") + labs(
+    title = "Distribution of arrests by demographic",
+    x = "Arrests made",
+    y = "Proportion",
+    fill = "Demographic group"
+  )
+```
+Black males and Hispanic/Latino males are the only demographics whose population increased in the "true" column rather than the "false". In other words, they are the only demographics with more members arrested than not arrested.
+
+###Distribution of arrests by reason for stop
+```{r}
+final_df |>
+  ggplot(aes(x= arrest_made, fill = reason_for_stop)) + geom_bar(position = "fill") + labs(
+    title = "Distribution of arrests by reason for stop",
+    x = "Arrests made",
+    y = "Proportion",
+    fill = "Reason for stop"
+  )
+```
+Driving while impaired and investigation seem to be the most common reasons a person was stopped among those whose traffic stops ended in an arrest.
+
+###Distribution of arrests made
+```{r}
+final_df |>
+  ggplot(aes(x= arrest_made, fill = demographic)) + geom_bar(position = "fill") + facet_wrap(~ reason_for_stop)+ labs(
+    title = "Distribution of arrests by demographic for each reason for stop",
+    x = "Arrests made",
+    y = "Proportion",
+    fill = "Demographic"
+  )
+```
+The proportion of people arrested in specific demographics differs by the reason. For example, White women are always represented less in the arrested category than the not arrested category, except when the reason for stop was DWI. But, Black men are represented more in the arrested category than the not arrested category in every reason for stop (most dramatically Seat Belt Violation) except DWI.  
+
+##Inferential Statistics
+
+Hypothesis: Whether a subject is arrested (Y) varies by their race and sex (X) varies by the reason they were stopped (X). Is reason for stop* a full/partial- mediating variable or an antecedent variable? 
+
+*Does reason for stop factor in at all? Does demographic affect reason for stop which affects arrest rates?
+
+Dependent: arrest (binary/boolean)
+Independent: Reason for stop (categorical), demographic (categorical)
+
+###Chi-square tests for independence 
+The chi-square test assumptions are: 
+        - Both variables are categorical.
+        - The observations are independent.
+        - The data are counts, not percentages or measurements.
+        - All expected counts should be at least 1 and at least 80% of expected counts should be 5 or more.
+        - The sample should be randomly selected, or at least reasonably representative. 
+
+#### Checking independence between Y and Z
+```{r}
+arrests_reason_table <-table(final_df$arrest_made, final_df$reason_for_stop)
+chisq.test(arrests_reason_table)
+```
+The p-value is statistically significant at the a=0.01 level. "Arrests made" and "reason for stop" are not independent, thus they have some statistically significant association.
+
+#### Checking independence between X and Z
+
+```{r}
+dem_reason_table <-table(final_df$reason_for_stop, final_df$demographic)
+chisq.test(dem_reason_table)
+```
+
+The p-value is statistically significant at the a=0.01 level. "Reason for stop" and "demographic" are not independent, thus they have some statistically significant association.
+
+#### Checking independence between X and Y
+```{r}
+arrests_dem_table <-table(final_df$arrest_made, final_df$demographic)
+chisq.test(arrests_dem_table)
+```
+### Fitting a logistic model 
+
+#### Set predictor references to majority class 
+```{r}
+final_df$demographic <- relevel(final_df$demographic, ref = "white male") #majority class
+final_df$reason_for_stop <- relevel(final_df$reason_for_stop, ref = "Speed Limit Violation") #majority class
+final_df$arrest_made <- relevel(final_df$arrest_made, ref = "FALSE")
+
+```
+
+#### Test for multi-collinearity
+
+Creating a smaller data frame to save memory
+```{r}
+library(speedglm)
+library(car) #contains VIF test
+clean_df <- final_df[, c("arrest_made", "reason_for_stop", "demographic")]
+```
+#### Creating the logistic regression model
+```{r}
+set.seed(123)
+
+model <- speedglm(
+  arrest_made ~ demographic * reason_for_stop,  #includes interaction terms
+  data = clean_df, 
+  family = binomial()
+)
+```
+
+Calculating VIF more manually because alias(vif)/vif() is only for lm/glm
+```{r}
+wts <- model$weights #extract weights
+dummy_lm <- lm(as.numeric(arrest_made) ~ demographic * reason_for_stop, data = clean_df, weights = wts) #create dummy lm
+vif(dummy_lm)
+print(vif)
+```
+Because we are approximating for categorical terms, we ought to use GVIF^(1/(2*Df)). A VIF < 4 implies our predictor variables do not suffer from multi-collinearity, so we can use them in the model together.
+
+
+Viewing results
+```{r}
+tidy(model) |>
+  filter(p.value <= 0.01) #filter for values at the desired alpha level (a = 0.01)
+```
+**Top 3 Highest & Most Significant Coefficients per Category:**
+*all significant at the a=0.01 level unless stated otherwise*
+
+- Demographic alone: 
+  - Positive: Hispanic male (1.12), Black male (0.68), Asian/Pacific Islander male (0.02; note: not significant)
+  - Negative: Unknown female (-1.42), Asian/Pacific Islander female (-1.36), white female (-0.82)
+
+- Reason for stop alone:
+  - Positive: DWI (5.46), Checkpoint (2.62), Investigation (2.09)
+  - Negative: None
+
+- Interaction:
+  - Positive: Other male/Vehicle Regulatory Violation (0.69), White female/DWI (0.66), Black female/Seatbelt Violation (0.64)
+  - Negative: Hispanic male/Checkpoint (-2.64), Hispanic female/Checkpoint(-2.26), Black male/Checkpoint (-1.31) 
+
+#### Odds Interpretation
+```{r}
+library(broom)
+model_results <- tidy(model, exponentiate = TRUE, conf.int = TRUE) |> #creates a clean df with odds ratios and confidence intervals 
+  filter(p.value <= 0.01) 
+model_results
+```
+**Top 3 Highest & Most Significant Odds per Category:**
+*all significant at the a=0.01 level unless stated otherwise*
+
+- Demographic alone: 
+  - Positive: Hispanic male (3.08), Black male (1.97)
+- Reason for stop alone:
+  - Positive: DWI (235.06), Checkpoint (13.74), Investigation (8.06)
+- Interaction:
+  - Positive: Other male/Vehicle Regulatory Violation (2.00), White female/DWI (1.94), Black female/Seatbelt Violation (1.89)
+
+  
+#### Visualization
+
+```{r}
+ggplot(model_results, aes(x = term, y = estimate)) +
+  geom_pointrange(aes(ymin = conf.low, ymax = conf.high)) + #will create confidence interval lines
+  geom_vline(xintercept = 1, linetype = "dashed", color = "violet") +
+  scale_y_log10() + # Use log scale for ratios
+  labs(
+    y = "Odds Ratio (log scale)",
+    x = "Predictor Variable",
+    title = "Logistic Regression Odds Ratios: Demographic * Reason for Stop"
+  ) +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+This graph has so many feature variables, even when the alpha level is accounted for! It's possible that the model might be over-fitting. The coefficients seem to vary with each iteration, and most features' Odds Ratios seem to be around the same value. A predictive modeling might help us determine the most important features influencing arrest rate - it seems demographic and reason for stop might not be it.
+
+
+##Predictive Statistics
+
+Which variables are most important for predicting whether a subject being stopped will result in an arrest?
+
+#### Make a smaller sample (but remember to upsample!!)
+We have over 4 million observations but limited space. A smaller sample would better help us!
+```{r}
+rm(list = ls())
+gc()
+```
+
+Remember to reload and re-clean data
+```{r}
+set.seed(321)
+library(tidyverse)
+
+final_df <- fread("final.csv") |>
+  mutate(across(where(is.character),
+                ~ case_when(
+                  .x %in% c("unknown", "Unknown") ~ NA_character_, TRUE ~ .x
+                ))) |>
+  mutate(across(where(is.character), ~str_squish(.))) |>
+  mutate(across(where(is.character), ~as.factor(.))) |>
+  clean_names()
+
+final_df <- subset(final_df, select = -c(6, 8)) #can only drop using minus sign using the indices of the columns
+```
+
+
+```{r}
+final_sample <- final_df |>
+  group_by(arrest_made) |>
+  slice_sample(prop = 0.001) |>
+  drop_na() #needed for smotenc to run
+```
+
+
+```{r}
+tabyl(final_sample$arrest_made) #Check the binary split is right; dropping NAs improved minority class a bit
+```
+
+Let's try to use a data set of less than 4,500 rows. 
+
+Description: The target variable is arrest made, and the positive class is TRUE or 1. The Naive Benchmark (proportion of the majority class) is 97.33%, which is an incredibly high standard for our model to beat. We have a variable with a very imbalanced class.
+
+Relevant hyperparameters: Cohen's kappa, balanced accuracy, PR AUC, multimodial log loss (prefer when available, tells us about the quality of the probabilities, i.e. the confidence of the model to predict the class). Accuracy and ROC AUC are fine, but they will be skewed because our target class is very imbalanced.
+
+Description: This data would be used by police departments across the country, whose objectives would most align with sensitivity. For advocates and community members, it would be better to be mistakenly left alone than mistakenly arrested, based on the available reasons for being stopped. But the police departments, who outside of their mission to protect and serve have certain quotas they must meet, should be more concerned about sensitivity. Sensitivity, in this context, would reflect how many people with legitimate cause to be arrested were actually arrested; AKA how many potential criminals were actually caught. 
+
+There are 4 predictive models we could try: decision tree, random forest, regularized regression and XGBoost. Let's try all of them then compare their results.
+
+UPSAMPLE UPSAMPLE UPSAMPLE
+
+### Option 1: Decision Trees 
+
+```{r}
+class(final_sample$arrest_made)
+```
+
+
+Tree Preprocessing
+```{r}
+final_sample <-final_sample |>
+  mutate(
+    arrest_made = factor(ifelse(arrest_made == TRUE, 1, 0))
+  ) |>
+  mutate(
+    search_conducted = as.factor(search_conducted),
+    observation_of_suspected_contraband = as.factor(observation_of_suspected_contraband),
+    informant_tip = as.factor(informant_tip),
+    suspicious_movement = as.factor(suspicious_movement),
+    witness_observation = as.factor(witness_observation),
+    erratic_suspicious_behavior = as.factor(erratic_suspicious_behavior),
+    other_official_information = as.factor(other_official_information),
+    quarter = as.numeric(quarter)
+  ) 
+
+glimpse(final_sample)
+```
+
+```{r}
+tabyl(final_sample$arrest_made) #ensure split remains
+```
+
+
+Create training and testing data 
+```{r}
+set.seed(321) 
+library(rsample)
+
+df_split <- initial_split(final_sample, prop = 0.80, strata = arrest_made)
+df_train <- training(df_split)
+df_test  <- testing(df_split) |>
+  mutate(
+    arrest_made = fct_relevel(arrest_made, "1")
+  )
+```
+Always remember for predictive/machine learning to set 1 as the positive level.
+
+```{r}
+nrow(df_train); nrow(df_test)
+```
+
+```{r}
+set.seed(321)
+
+df_folds <- vfold_cv(df_train, v = 5, strata = arrest_made) 
+df_folds
+```
+Tree Recipe: This is where you upsample
+```{r}
+library(recipes)
+library(themis) #contains up-sample package
+
+shared_rec <- recipe(arrest_made ~ ., data = df_train) |> 
+  step_smotenc(arrest_made, over_ratio = 1, skip = TRUE) |> #
+  step_zv(all_predictors()) |>                 
+  step_impute_median(all_numeric_predictors()) |> 
+  step_impute_mode(all_nominal_predictors()) |> 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+shared_rec
+```
+NOTE: We are using step_smote to upsample the minority class only on the training data, not the testing data. It's supposed to handle the extreme inequality better than step_upsample, which elimates the need to just cost in set_engine() and cost complexity in tune_grid().
+
+```{r}
+#Tree Specificity
+library(rpart)
+library(tidymodels)
+
+dt_spec <- decision_tree(
+  mode = "classification",
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) |>
+  set_engine("rpart")
+```
+
+
+```{r}
+#Tree Workflow (recipe + specificity bundle)
+dt_wf <- workflow() %>%
+  add_recipe(shared_rec) %>%
+  add_model(dt_spec)
+```
+
+```{r}
+#Tree Grid <-  calculate the most appropriate size of tree
+set.seed(321)
+
+dt_grid <- grid_latin_hypercube(
+  cost_complexity(range = c(-4, -1)),  # log10 scale for pruning strength
+  tree_depth(range = c(2L, 5L)), #low for now to make sure this runs
+  min_n(range = c(172L, 345L)), #set to between 0.5% and 1% of training data 
+  size = 10
+)
+```
+
+Set metrics
+```{r}
+class_metrics <- metric_set(bal_accuracy, pr_auc, kap, mn_log_loss) 
+#remove accuracy because it's irrelevant for an imbalanced class dataset
+class_metrics
+```
+Removed accuracy because it's irrelevant for an imbalanced class dataset
+Also removed roc_auc because it's made for continuous predictions and doesn't handle hard class predictions well
+
+Tree Tuning
+```{r}
+#Tree Tuning
+set.seed(321)
+
+dt_tune <- tune_grid(
+  dt_wf,
+  resamples = df_folds,
+  grid = dt_grid,
+  metrics = class_metrics,
+  control = control_grid(save_pred = TRUE)
+)
+```
+
+```{r}
+primary_metric <- "mn_log_loss"
+primary_metric
+```
+
+More on Log Loss and Why we Chose It
+
+It measures how well your model's predicted probabilities match the true class.
+- If the model assigns high probability to the true class, log loss is small (good).
+- If the model assigns low probability to the true class, log loss is large (bad).
+- It punishes overconfident wrong predictions hard.
+
+Intuition (binary case)
+
+If the true class is "yes" and your model predicts:
+- $p($ yes $)=0.90 \rightarrow$ good → small loss
+- $p($ yes $)=0.51 \rightarrow$ meh $\rightarrow$ moderate loss
+- $p($ yes $)=0.01 \rightarrow$ terrible $($ confidently wrong $) \rightarrow$ huge loss
+
+Why it's useful
+- It evaluates the quality of probabilities, not just the final predicted class.
+- Great when you care about thresholding, ranking, or decision-making under costs.
+- Works for binary and multiclass classification.
+
+How to interpret values
+- 0 is perfect (never happens in real life).
+- Smaller is better.
+- There's no universal "good" cutoff; compare models on the same dataset.
+
+Time to test!
+```{r}
+dt_best <- select_best(dt_tune, metric = primary_metric)
+final_dt_wf <- finalize_workflow(dt_wf, dt_best)
+final_dt_fit <- fit(final_dt_wf, data = df_train)
+```
+
+Generating Predictions
+
+Class predictions are good for accuracy based metrics 
+```{r}
+set.seed(321)
+dt_test_class <- predict(final_dt_fit, df_test, type = "class") |> 
+  bind_cols(df_test |>
+              dplyr::select(arrest_made)) |>
+  mutate(
+    .pred_class = fct_relevel(.pred_class, "1")
+  )
+
+dt_class_results <- dt_test_class |>
+  metrics(truth = arrest_made, estimate = .pred_class)
+
+dt_class_results
+```
+
+Use a Confusion matrix to test!
+```{r}
+set.seed(321)
+caret::confusionMatrix(data = dt_test_class$.pred_class,
+                       reference = dt_test_class$arrest_made,
+                       positive = "1")
+```
+Note: the balanced accuracy is much lower than the accuracy!
+
+Probability predictions are good for log_loss/AUC metrics
+```{r}
+set.seed(321)
+
+df_test <- df_test |>
+  mutate(arrest_made = fct_relevel(arrest_made, "1"))
+
+df_test
+```
+
+```{r}
+set.seed(321)
+dt_test_prob <- predict(final_dt_fit, df_test, type = "prob") |>
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made))
+```
+
+
+```{r}
+set.seed(321)
+dt_prob_mat <- predict(final_dt_fit, new_data = df_test, type = "prob")  # matrix: n x classes
+dt_prob_df <- as_tibble(dt_prob_mat)
+pr_auc_dt_data <- bind_cols(df_test |>
+                              dplyr::select(arrest_made), dt_prob_df) |>
+  ungroup() |>
+  pr_auc(truth = arrest_made, .pred_1, event_level = "first")
+
+pr_auc_dt_data
+```
+
+
+Visualizing the Tree
+```{r}
+rpart_engine <- extract_fit_engine(final_dt_fit)
+rpart.plot::rpart.plot(rpart_engine, roundint = FALSE, main = "Best Decision Tree")
+```
+
+```{r}
+dt_vi <- tibble(
+  Variable   = names(rpart_engine$variable.importance),
+  Importance = as.numeric(rpart_engine$variable.importance)
+) |>
+  arrange(desc(Importance)) |>
+  slice_head(n = 15) |>
+  mutate(
+    pct   = 100 * Importance / sum(Importance),
+    Model = "Decision Tree"
+  )
+
+ggplot(dt_vi, aes(x = reorder(Variable, pct), y = pct)) +
+  geom_col(color = "black", fill = "lavender") +
+  coord_flip() +
+  labs(title = "Decision Tree — Variable Importance (%)", x = NULL, y = "Importance (%)") +
+  theme_minimal()
+```
+From this tree, it seems a search being conducted and the presence of other official infomation are the two most important factors for predicting whether a subject will be arrested. The pr_auc value, the decision tree logic, and the fact that both TRUE and FALSE search_conducted and other_official_information variables predict future arrests implies that this tree is not very helpful for prediction.
+
+### Option 2: Random Forest 
+
+```{r}
+rf_spec <- rand_forest( mode = "classification", trees = tune(),
+mtry = tune(),
+min_n = tune()
+) |> set_engine("ranger",
+             importance = "permutation", #good for avoiding overfitting but becomes near useless with multicollineairty
+             seed = 321)
+rf_wf <- workflow() |> 
+  add_recipe(shared_rec) |> 
+  add_model(rf_spec)
+```
+
+```{r}
+set.seed(321)
+# Count predictors after recipe baking for mtry range
+n_preds <- ncol(bake(prep(shared_rec, df_train), new_data = NULL)) - 1
+# Do not alter the hyper-parameter test values below!
+rf_grid <- grid_latin_hypercube( trees(range = c(200L, 600L)),
+mtry(range = c(3L, min(n_preds, 20L))), min_n(range = c(2L, 30L)),
+size = 20 )
+```
+
+```{r}
+set.seed(321)
+rf_tune <- tune_grid( rf_wf,
+resamples = df_folds,
+grid = rf_grid,
+metrics = class_metrics,
+control = control_grid(save_pred = TRUE)
+)
+```
+
+```{r}
+set.seed(321)
+rf_best <- select_best(rf_tune, metric = primary_metric)
+rf_best
+```
+Creating the final workflow
+```{r}
+set.seed(321)
+final_rf_wf <- finalize_workflow(rf_wf, rf_best)
+```
+
+Final Random Forest fit (class-based)
+```{r}
+set.seed(321)
+final_rf_fit <- fit(final_rf_wf, data = df_train)
+
+
+rf_test_preds <- predict(final_rf_fit, df_test) |> 
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made)) |>
+  mutate(
+    .pred_class = fct_relevel(.pred_class, "1")
+  )
+
+rf_test_preds |>
+  metrics(truth = arrest_made, estimate = .pred_class)
+```
+
+Confusion Matrix fit
+```{r}
+set.seed(321)
+caret::confusionMatrix(data = rf_test_preds$.pred_class,
+                       reference = rf_test_preds$arrest_made,
+                       positive = "1")
+```
+Kappa value hardly improved, neither did the balanced accuracy.
+
+Probability fit
+
+```{r}
+set.seed(321)
+rf_test_prob <- predict(final_rf_fit, df_test, type = "prob") |>
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made))
+```
+
+
+```{r}
+set.seed(321)
+rf_prob_mat <- predict(final_rf_fit, new_data = df_test, type = "prob")  # matrix: n x classes
+rf_prob_df <- as_tibble(rf_prob_mat)
+pr_auc_rf_data <- bind_cols(df_test |>
+                              dplyr::select(arrest_made), rf_prob_df) |>
+  ungroup() |>
+  pr_auc(truth = arrest_made, .pred_1, event_level = "first")
+
+pr_auc_rf_data
+```
+Our pr_auc value actually got worse.
+
+Graphing the most important features
+```{r}
+rf_vi <- vip::vi(extract_fit_engine(final_rf_fit)) |> slice_head(n = 15) |>
+  mutate(
+    pct = 100 * Importance / sum(Importance),
+    Model = "Random Forest" ) |>
+  rename(Variable = Variable)
+
+ggplot(rf_vi, aes(x = reorder(Variable, pct), y = pct)) + geom_col(fill = "slateblue") + coord_flip() + labs(title = "Random Forest — Variable Importance (Permutation %)", x = NULL, y = "Importance (%)") + theme_minimal()
+```
+I suspect search_conducted is not a helpful variable for analysis, as the same issue as the decision tree emerged. I suspect the Random Forest and decision trees still favor the majority class, even when we added the extra penalty.
+
+### Option 3: XGBoost
+
+Changing rec to explicitly state the target variable and logical variables are integers
+```{r}
+xgb_rec <- shared_rec |>
+  step_mutate_at(all_logical_predictors(), fn = as.numeric) |>
+  step_string2factor(all_nominal_predictors()) |>
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+```
+
+Create specs
+```{r}
+xgb_spec <- boost_tree( mode = "classification", 
+                        trees = tune(), 
+                        tree_depth = tune(), 
+                        learn_rate = tune(), 
+                        min_n = tune(), 
+                        loss_reduction = tune(), 
+                        sample_size = tune()
+                        ) |>
+  set_engine("xgboost", nthread = 1)
+```
+
+Set workflow
+```{r}
+xgb_wf <- workflow() |> 
+  add_recipe(xgb_rec) |> 
+  add_model(xgb_spec)
+```
+
+Set grid of hyper-parameter values and tune
+```{r}
+set.seed(321)
+xgb_grid <- grid_latin_hypercube(
+  trees(range = c(50L, 500L)),
+  tree_depth(range = c(3L, 8L)),
+  learn_rate(range = c(-3, -1)),
+  min_n(range = c(2L, 20L)),
+  loss_reduction(range = c(-5, 1.5)),
+  sample_size = sample_prop(range = c(0.5, 1.0)), size = 30
+)
+```
+
+```{r}
+set.seed(321)
+xgb_tune <- tune_grid(
+  xgb_wf,
+  resamples = df_folds,
+  grid = xgb_grid,
+  metrics = class_metrics,
+  control = control_grid(save_pred = TRUE)
+)
+```
+
+```{r}
+xgb_best <- select_best(xgb_tune, metric = primary_metric)
+xgb_best
+```
+Finalize workflow and get class estimates
+```{r}
+set.seed(321)
+final_xgb_wf <- finalize_workflow(xgb_wf, xgb_best)
+final_xgb_fit <- fit(final_xgb_wf, data = df_train)
+
+xgb_test_preds <- predict(final_xgb_fit, df_test) |> 
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made)) |>
+  mutate(
+    .pred_class = fct_relevel(.pred_class, "1")
+  )
+
+xgb_test_preds |>
+  metrics(truth = arrest_made, estimate = .pred_class)
+```
+Kappa value improved somewhat.
+
+Confusion Matrix fit
+```{r}
+set.seed(321)
+caret::confusionMatrix(data = xgb_test_preds$.pred_class,
+                       reference = xgb_test_preds$arrest_made,
+                       positive = "1")
+```
+Kappa and sensitivity value improved, balanced accuracy got worse.
+
+
+Probability fit
+```{r}
+set.seed(321)
+xgb_test_prob <- predict(final_xgb_fit, df_test, type = "prob") |>
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made))
+```
+
+
+```{r}
+set.seed(321)
+xgb_prob_mat <- predict(final_xgb_fit, new_data = df_test, type = "prob")  # matrix: n x classes
+xgb_prob_df <- as_tibble(xgb_prob_mat)
+
+pr_auc_xgb_data <- bind_cols(df_test |>
+                              dplyr::select(arrest_made), xgb_prob_df) |>
+  ungroup() |>
+  pr_auc(truth = arrest_made, .pred_1, event_level = "first")
+
+pr_auc_xgb_data
+```
+Pr_auc value improved!
+
+Visualization
+```{r}
+xgb_vi <- vip::vi(extract_fit_engine(final_xgb_fit)) |> slice_head(n = 15) |>
+mutate(
+pct = 100 * Importance / sum(Importance),
+    Model = "XGBoost"
+  )
+
+ggplot(xgb_vi, aes(x = reorder(Variable, pct), y = pct)) +
+  geom_col(color = "black", fill = "lavenderblush") +
+  coord_flip() +
+  labs(title = "XGBoost — Variable Importance (Gain %)", x = NULL, y = "Importance (%)") + theme_minimal()
+```
+Description: The XGBoost model has placed most importance on a search (not) being conducted and being in the city of Charlotte in predicting an arrest. These do not seem to make sense though, and our kappa and positive prediction rates are below average. 
+
+### Option 4: Regularized Logistic Regression
+
+Create specs
+```{r}
+enet_spec <- logistic_reg(
+    mode = "classification",  # Required for logistic regression
+    penalty = tune(),         # Lambda: Amount of regularization
+    mixture = tune()          # Alpha: Mix of L1 (Lasso) and L2 (Ridge)
+  ) %>% 
+  set_engine("glmnet")
+```
+
+Create workflows
+```{r}
+enet_wf <- workflow() |> 
+  add_recipe(xgb_rec) |> #Elastic Net benefits from categorical variables coded as dummy variables so use the xgb recipe 
+  add_model(enet_spec) 
+```
+
+```{r}
+set.seed(321)
+enet_grid <- grid_latin_hypercube(
+  penalty(range = c(-4, 1)),
+  mixture(range = c(0, 1)),
+  size = 30
+# log10 scale: 0.0001 to 10 mixture(range = c(0, 1)), # 0 = Ridge, 1 = LASSO size = 30
+)
+```
+
+```{r}
+set.seed(321)
+enet_tune <- enet_tune <- tune_grid(enet_wf,
+                                    resamples = df_folds,
+                                    grid = enet_grid,
+                                    metrics = class_metrics,
+                                    control = control_grid(save_pred = TRUE)
+)
+```
+
+```{r}
+set.seed(321)
+
+enet_best <- select_best(enet_tune, metric = primary_metric)
+enet_best
+```
+```{r}
+final_enet_wf <- finalize_workflow(enet_wf, enet_best)
+```
+
+```{r}
+best_mix <- round(enet_best$mixture, 3)
+best_mix
+```
+
+```{r}
+set.seed(321)
+cat("Interpretation:",
+ifelse(best_mix == 0, "Pure Ridge (L2 only)", ifelse(best_mix == 1, "Pure LASSO (L1 only)",
+paste0("Elastic Net (", 100*best_mix, "% L1 / ", 100*(1-best_mix), "% L2)"))), "\n")
+```
+
+```{r}
+set.seed(321)
+final_enet_fit <- fit(final_enet_wf, data = df_train)
+```
+
+Class-based metrics
+
+```{r}
+set.seed(321)
+enet_test_preds <- predict(final_enet_fit, df_test) |>
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made)) |>
+  mutate(
+    .pred_class = fct_relevel(.pred_class, "1")
+  )
+
+enet_test_preds |>
+  metrics(truth = arrest_made, estimate = .pred_class)
+```
+
+Confusion Matrix fit
+```{r}
+set.seed(321)
+caret::confusionMatrix(data = enet_test_preds$.pred_class,
+                       reference = enet_test_preds$arrest_made,
+                       positive = "1")
+```
+
+Probability fit
+```{r}
+set.seed(321)
+enet_test_prob <- predict(final_enet_fit, df_test, type = "prob") |>
+  bind_cols(df_test |> 
+              dplyr::select(arrest_made))
+```
+
+
+```{r}
+set.seed(321)
+enet_prob_mat <- predict(final_enet_fit, new_data = df_test, type = "prob")  # matrix: n x classes
+enet_prob_df <- as_tibble(enet_prob_mat)
+
+pr_auc_enet_data <- bind_cols(df_test |>
+                              dplyr::select(arrest_made), enet_prob_df) |>
+  ungroup() |>
+  pr_auc(truth = arrest_made, .pred_1, event_level = "first")
+
+pr_auc_enet_data
+```
+Better, but not as good as XGBoost.
+
+Visualization
+```{r}
+enet_vi <- vip::vi(extract_fit_engine(final_enet_fit)) |> slice_head(n = 15) |>
+mutate(
+pct = 100 * Importance / sum(Importance),
+    Model = "Elastic Net (30.5% L1 | 69.5% L2)"
+  )
+
+ggplot(enet_vi, aes(x = reorder(Variable, pct), y = pct)) +
+  geom_col(color = "black", fill = "green4") +
+  coord_flip() +
+  labs(title = "Elastic Net — Variable Importance", x = NULL, y = "Importance (%)") + theme_minimal()
+```
+Description: This model reflects the results from our logistic regression best, but there seem to be disparate variables in the Top5 most relevant predictors for a future arrest being made. 
+
+Takeaway: The PR_AUC and positive predictive values are the best for XGBoost, at around 0.42 and 0.52, respectively, but the sensitivity rate is highest for the decision tree at 0.61. Clearly additional model tuning should be done to ensure the models are handling the class imbalance better, since all of them favor the majority class excessively. Until then, I will wait to determine which variables are most important for predicting that an individual stopped is arrested.
+
