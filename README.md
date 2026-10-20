@@ -1,2 +1,2 @@
-# plan372-hw4
-# practice-acmlab
+# Traffic Stops in North Carolina
+This project contains descriptive, inferential and predictive statistics investigating the relationship between subject demographic, the reason recorded for the stop, and whether an arrest was made. The first RMD Mungai_Q1 file contains the descriptive and inferential statistics submitted for a grade and the second contains the updated information, including predictive statistics, that I calculated after graduation.
